@@ -1,0 +1,11 @@
+# secrets and local data - never commit
+.env
+*.pem
+node_modules/
+*.log
+.DS_Store
+# build output
+dist/
+build/
+# zips made for delivery
+*.zip

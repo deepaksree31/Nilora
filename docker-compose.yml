@@ -1,0 +1,116 @@
+# NILORA local stack. Start with:  docker compose up --build
+# First run: node scripts/init-env.js   (creates .env with random secrets)
+name: nilora
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?run node scripts/init-env.js}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-nilora}
+      MYSQL_USER: ${MYSQL_USER:-nilora}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?run node scripts/init-env.js}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # runs only on the very first start (empty volume). Reset with: docker compose down -v
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: alpine/minio:latest-release
+    user: "0:0"
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nilora_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run node scripts/init-env.js}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:9001:9001"   # MinIO web console, this PC only. Port 9000 is NOT published.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || wget -q --spider http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  api:
+    build: ./services/api
+    restart: unless-stopped
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    environment:
+      PORT: 8080
+      JWT_SECRET: ${JWT_SECRET:?run node scripts/init-env.js}
+      TICKET_SECRET: ${TICKET_SECRET:?run node scripts/init-env.js}
+      PUBLIC_STREAM_URL: ${PUBLIC_STREAM_URL:-http://localhost:8081}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-nilora}
+      MYSQL_USER: ${MYSQL_USER:-nilora}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nilora_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      DEV_EXPOSE_OTP: ${DEV_EXPOSE_OTP:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+    ports:
+      - "8080:8080"
+
+  stream:
+    build: ./services/stream
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    environment:
+      PORT: 8081
+      TICKET_SECRET: ${TICKET_SECRET:?run node scripts/init-env.js}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nilora_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "8081:8081"
+
+  web:
+    build: ./services/web
+    restart: unless-stopped
+    environment:
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080}
+    ports:
+      - "3000:80"
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
