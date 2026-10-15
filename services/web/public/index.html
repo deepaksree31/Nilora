@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NILORA</title>
+<script src="config.js"></script>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --ink:#f2f4f8; --mute:#9aa3b2; --acc:#7c5cff; --line:#262b36; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 system-ui,sans-serif; padding-bottom:130px; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line); z-index:5; }
+  h1 { font-size:20px; margin:0; letter-spacing:2px; }
+  button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 14px; cursor:pointer; }
+  button.primary { background:var(--acc); border-color:var(--acc); }
+  main { padding:8px 20px; }
+  h2 { font-size:17px; margin:24px 0 10px; }
+  .row { display:flex; gap:12px; overflow-x:auto; padding-bottom:6px; }
+  .card { flex:0 0 150px; background:var(--card); border-radius:12px; padding:10px; }
+  .cover { width:100%; aspect-ratio:1; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:34px; background-size:cover; background-position:center; cursor:pointer; }
+  .t { margin-top:8px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .a { color:var(--mute); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card button { margin-top:8px; width:100%; font-size:13px; }
+  #bar { position:fixed; left:0; right:0; bottom:0; background:#14171d; border-top:1px solid var(--line); padding:12px 20px; }
+  #bar audio { width:100%; margin-top:6px; }
+  #modal { position:fixed; inset:0; background:#000a; display:none; align-items:center; justify-content:center; z-index:10; }
+  #modal.open { display:flex; }
+  .box { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px; width:min(380px,92vw); }
+  .box input { width:100%; margin:6px 0; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; }
+  .err { color:#ff7a7a; min-height:20px; font-size:13px; }
+  .tabs { display:flex; gap:8px; margin-bottom:10px; }
+  .muted { color:var(--mute); font-size:13px; }
+</style>
+</head>
+<body>
+<header><h1>NILORA</h1><div><span id="who" class="muted">Guest</span> <button id="signin">Sign in</button></div></header>
+<main id="home"><p class="muted">Loading...</p></main>
+<div id="bar"><div id="now" class="muted">Pick a song to play</div><audio id="audio" controls></audio></div>
+
+<div id="modal"><div class="box">
+  <div class="tabs"><button id="tlogin" class="primary">Log in</button><button id="tsign">Create account</button></div>
+  <p id="why" class="muted"></p>
+  <form id="form">
+    <input id="fname" placeholder="Full name" autocomplete="name" style="display:none">
+    <input id="femail" type="email" placeholder="Email" autocomplete="email" required>
+    <input id="fpass" type="password" placeholder="Password" autocomplete="current-password" required>
+    <input id="fcode" placeholder="6-digit code from your email" inputmode="numeric" style="display:none">
+    <div id="ferr" class="err"></div>
+    <button class="primary" id="fgo" type="submit" style="width:100%">Log in</button>
+  </form>
+  <button id="fclose" style="width:100%;margin-top:8px">Not now</button>
+</div></div>
+
+<script>
+const API = (window.NILORA_CONFIG && window.NILORA_CONFIG.apiBase) || 'http://localhost:8080';
+const S = { token: null, refresh: localStorage.getItem('nl_refresh') || null, user: null, pending: null };
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+async function raw(path, opt = {}) {
+  const r = await fetch(API + path, { method: opt.method || 'GET',
+    headers: { ...(opt.body ? { 'Content-Type': 'application/json' } : {}), ...(S.token && !opt.noAuth ? { Authorization: 'Bearer ' + S.token } : {}) },
+    body: opt.body ? JSON.stringify(opt.body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(data.error || 'Request failed'), { status: r.status, code: data.code });
+  return data;
+}
+async function newGuest() { S.token = (await raw('/v1/session/guest', { method: 'POST', noAuth: true })).accessToken; S.user = null; }
+async function renew() { // token expired: use the refresh token if logged in, else become a fresh guest
+  if (S.refresh) { try { applyLogin(await raw('/v1/auth/refresh', { method: 'POST', noAuth: true, body: { refreshToken: S.refresh } })); return; } catch (e) { S.refresh = null; localStorage.removeItem('nl_refresh'); } }
+  await newGuest(); paintWho();
+}
+async function api(path, opt) { // one automatic retry after renewing the token
+  try { return await raw(path, opt); }
+  catch (e) { if (e.code === 'TOKEN_INVALID') { await renew(); return raw(path, opt); } throw e; }
+}
+function applyLogin(d) { S.token = d.accessToken; S.refresh = d.refreshToken; S.user = d.user; localStorage.setItem('nl_refresh', d.refreshToken); paintWho(); }
+function paintWho() { $('who').textContent = S.user ? S.user.name : 'Guest'; $('signin').textContent = S.user ? 'Log out' : 'Sign in'; }
+
+function card(s) {
+  const el = document.createElement('div'); el.className = 'card';
+  const cv = document.createElement('div'); cv.className = 'cover';
+  if (s.coverUrl) cv.style.backgroundImage = 'url("' + s.coverUrl + '")'; else { cv.style.background = s.bgColor || '#2a2f3a'; cv.textContent = s.logo || '♪'; }
+  cv.onclick = () => play(s);
+  el.append(cv);
+  el.insertAdjacentHTML('beforeend', '<div class="t">' + esc(s.title) + '</div><div class="a">' + esc(s.artists.map(a => a.name).join(', ')) + '</div>');
+  const dl = document.createElement('button'); dl.textContent = 'Download'; dl.onclick = () => download(s); el.append(dl);
+  return el;
+}
+async function home() {
+  const d = await api('/v1/home'); const root = $('home'); root.innerHTML = '';
+  if (!d.sections.length) { root.innerHTML = '<p class="muted">No songs yet. Add some on the admin page (admin.html).</p>'; return; }
+  for (const sec of d.sections) {
+    root.insertAdjacentHTML('beforeend', '<h2>' + esc(sec.title) + '</h2>');
+    const row = document.createElement('div'); row.className = 'row'; sec.songs.forEach(s => row.append(card(s))); root.append(row);
+  }
+}
+async function play(s) {
+  try {
+    const t = await api('/v1/songs/' + s.id + '/play-ticket', { method: 'POST' });
+    $('audio').src = t.url; await $('audio').play();
+    $('now').textContent = s.title + ' - ' + s.artists.map(a => a.name).join(', ');
+  } catch (e) { $('now').textContent = 'Could not play: ' + e.message; }
+}
+async function download(s) {
+  try {
+    const t = await api('/v1/songs/' + s.id + '/download-ticket', { method: 'POST' });
+    const a = document.createElement('a'); a.href = t.url; a.download = ''; document.body.append(a); a.click(); a.remove();
+  } catch (e) {
+    if (e.code === 'LOGIN_REQUIRED') { S.pending = () => download(s); openModal('Log in to download this song. Listening stays free.'); } // the only automatic prompt
+    else $('now').textContent = e.message;
+  }
+}
+
+/* ---- login / signup modal ---- */
+let mode = 'login', stage = 'form';
+function openModal(why) { $('why').textContent = why || ''; setMode('login'); $('modal').classList.add('open'); }
+function closeModal() { $('modal').classList.remove('open'); S.pending = null; }
+function setMode(m) {
+  mode = m; stage = 'form'; $('ferr').textContent = '';
+  $('fname').style.display = m === 'signup' ? '' : 'none'; $('fcode').style.display = 'none';
+  $('fgo').textContent = m === 'signup' ? 'Create account' : 'Log in';
+  $('tlogin').className = m === 'login' ? 'primary' : ''; $('tsign').className = m === 'signup' ? 'primary' : '';
+}
+$('tlogin').onclick = () => setMode('login'); $('tsign').onclick = () => setMode('signup'); $('fclose').onclick = closeModal;
+$('signin').onclick = async () => {
+  if (S.user) { raw('/v1/auth/logout', { method: 'POST', noAuth: true, body: { refreshToken: S.refresh } }).catch(() => {}); S.refresh = null; localStorage.removeItem('nl_refresh'); await newGuest(); paintWho(); }
+  else openModal('');
+};
+$('form').onsubmit = async ev => {
+  ev.preventDefault(); $('ferr').textContent = '';
+  const email = $('femail').value, password = $('fpass').value;
+  try {
+    if (mode === 'login') applyLogin(await raw('/v1/auth/login', { method: 'POST', noAuth: true, body: { email, password } }));
+    else if (stage === 'form') {
+      const r = await raw('/v1/auth/signup', { method: 'POST', noAuth: true, body: { name: $('fname').value, email, password } });
+      stage = 'code'; $('fcode').style.display = ''; $('fgo').textContent = 'Verify email';
+      $('ferr').textContent = r.devCode ? 'Dev mode: your code is ' + r.devCode : 'We sent a 6-digit code to your email.';
+      return;
+    } else applyLogin(await raw('/v1/auth/verify', { method: 'POST', noAuth: true, body: { email, code: $('fcode').value } }));
+    const again = S.pending; $('modal').classList.remove('open'); S.pending = null;
+    if (again) again(); // continue the download the person asked for
+  } catch (e) { $('ferr').textContent = e.message; }
+};
+
+(async () => {
+  try {
+    if (S.refresh) await renew(); else await newGuest();
+    paintWho(); await home();
+  } catch (e) { $('home').innerHTML = '<p class="muted">Cannot reach the server (' + esc(e.message) + ').</p>'; }
+})();
+</script>
+</body>
+</html>

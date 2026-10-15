@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NILORA admin</title>
+<script src="config.js"></script>
+<style>
+  body { margin:0; background:#0f1115; color:#f2f4f8; font:15px/1.4 system-ui,sans-serif; padding:20px; max-width:760px; margin-inline:auto; }
+  input, select, button { font:inherit; padding:9px; border-radius:8px; border:1px solid #262b36; background:#181b22; color:#f2f4f8; }
+  input[type=file] { width:100%; } label { display:block; margin:10px 0 3px; color:#9aa3b2; font-size:13px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; } .full { grid-column:1/-1; }
+  button.primary { background:#7c5cff; border-color:#7c5cff; } .err { color:#ff7a7a; } .ok { color:#6be39a; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; } td, th { padding:8px; border-bottom:1px solid #262b36; text-align:left; }
+</style>
+</head>
+<body>
+<h1>NILORA admin</h1>
+<div id="login">
+  <input id="em" type="email" placeholder="Admin email"> <input id="pw" type="password" placeholder="Password"> <button class="primary" id="go">Log in</button>
+  <p id="lerr" class="err"></p>
+</div>
+<div id="panel" style="display:none">
+  <h2>Add a song</h2>
+  <div class="grid">
+    <div class="full"><label>Title *</label><input id="title" style="width:100%"></div>
+    <div><label>Male artist</label><input id="male" style="width:100%"></div>
+    <div><label>Female artist</label><input id="female" style="width:100%"></div>
+    <div><label>Music / band</label><input id="music" style="width:100%"></div>
+    <div><label>Album</label><input id="album" placeholder="Single" style="width:100%"></div>
+    <div class="full"><label>Categories (comma separated, e.g. Chill, Indie)</label><input id="cats" style="width:100%"></div>
+    <div class="full"><label>Audio file *</label><input id="audio" type="file" accept="audio/*"></div>
+    <div class="full"><label>Cover image (optional)</label><input id="cover" type="file" accept="image/*"></div>
+  </div>
+  <p><button class="primary" id="save">Upload song</button> <span id="msg"></span></p>
+  <h2>Songs</h2>
+  <table><thead><tr><th>#</th><th>Title</th><th>Status</th><th></th></tr></thead><tbody id="list"></tbody></table>
+</div>
+<script>
+const API = (window.NILORA_CONFIG && window.NILORA_CONFIG.apiBase) || 'http://localhost:8080';
+let TOKEN = null; const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+async function call(path, opt = {}) {
+  const r = await fetch(API + path, { method: opt.method || 'GET', headers: { ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}), ...(opt.json ? { 'Content-Type': 'application/json' } : {}) },
+    body: opt.form || (opt.json ? JSON.stringify(opt.json) : undefined) });
+  const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Request failed'); return d;
+}
+$('go').onclick = async () => {
+  try { TOKEN = (await call('/v1/admin/login', { method: 'POST', json: { email: $('em').value, password: $('pw').value } })).accessToken;
+    $('login').style.display = 'none'; $('panel').style.display = ''; refresh(); } catch (e) { $('lerr').textContent = e.message; }
+};
+function duration(file) { return new Promise(res => { const a = new Audio(); a.preload = 'metadata'; a.onloadedmetadata = () => res(Math.round(a.duration) || 180); a.onerror = () => res(180); a.src = URL.createObjectURL(file); }); }
+$('save').onclick = async () => {
+  const f = $('audio').files[0]; $('msg').className = ''; $('msg').textContent = 'Uploading...';
+  try {
+    if (!f) throw new Error('Choose an audio file.');
+    const fd = new FormData();
+    fd.append('title', $('title').value); fd.append('male', $('male').value); fd.append('female', $('female').value); fd.append('music', $('music').value);
+    fd.append('album', $('album').value || 'Single'); fd.append('durationSec', await duration(f));
+    fd.append('categories', JSON.stringify($('cats').value.split(',').map(s => s.trim()).filter(Boolean)));
+    fd.append('audio', f); if ($('cover').files[0]) fd.append('cover', $('cover').files[0]);
+    await call('/v1/admin/songs', { method: 'POST', form: fd });
+    $('msg').className = 'ok'; $('msg').textContent = 'Saved.'; ['title','male','female','music','album','cats','audio','cover'].forEach(i => $(i).value = ''); refresh();
+  } catch (e) { $('msg').className = 'err'; $('msg').textContent = e.message; }
+};
+async function refresh() {
+  const d = await call('/v1/admin/songs'); const tb = $('list'); tb.innerHTML = '';
+  d.songs.forEach(s => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + s.id + '</td><td>' + esc(s.title) + '<br><small>' + esc(s.artists.map(a => a.name).join(', ')) + '</small></td><td>' + (s.hidden ? 'Hidden' : 'Visible') + (s.hasAudio ? '' : ' (no audio)') + '</td><td></td>';
+    const hide = document.createElement('button'); hide.textContent = s.hidden ? 'Show' : 'Hide';
+    hide.onclick = async () => { await call('/v1/admin/songs/' + s.id + '/hidden', { method: 'PATCH', json: { hidden: !s.hidden } }); refresh(); };
+    const del = document.createElement('button'); del.textContent = 'Delete';
+    del.onclick = async () => { if (confirm('Delete "' + s.title + '" and its files?')) { await call('/v1/admin/songs/' + s.id, { method: 'DELETE' }); refresh(); } };
+    tr.lastChild.append(hide, ' ', del); tb.append(tr);
+  });
+}
+</script>
+</body>
+</html>

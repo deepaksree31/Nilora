@@ -1,0 +1,13 @@
+{
+  "name": "nilora-stream",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": { "start": "node src/index.js" },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "minio": "^8.0.1"
+  }
+}
